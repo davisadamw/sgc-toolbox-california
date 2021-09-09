@@ -20,5 +20,6 @@ lodes_ca_tracts <- lodes_ca_raw_with_tracts %>%
 
 # save the result
 lodes_ca_tracts %>% 
-  write_rds("Data/ca_lodes_tract.rds", compress = "gz")
+  write_rds("Data/ca_lodes_tract.rds", compress = "gz") %>% 
+  write_csv("Data/ca_lodes_tract.csv.gz")
 

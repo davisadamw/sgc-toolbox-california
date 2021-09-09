@@ -37,34 +37,43 @@ charge_probs_abcd <- charge_probs %>%
     cmtdist < 30 ~ "c",
     cmtdist < 40 ~ "d"))
 
-#### STOP HERE UNTIL WE FIND COMMUTE DISTANCES ####
+# make commute distance interpolator
+available_dists <- unique(charge_probs$cmtdist) # unique values of cmtdist
+barrier_dists <- (available_dists + lag(available_dists, default = 0))/2 # barriers between these values
+
+commute_interpolator <- approxfun(x = barrier_dists,
+                                  y = available_dists,
+                                  method = "constant",
+                                  rule = 2)
 
 # prepare the workcharging data ####
 # load commute totals and approximate distances
-commute_details <- read_rds("Data/ca_lodes_tract.rds")# %>% 
+commute_details <- read_rds("Data/ca_tract_jobs_dists.rds") %>% 
+  # set all missing same-tract distances to 0
+  mutate(d_meters_network = if_else(is.na(d_meters_network) & (h_tract == w_tract),
+                                    0, d_meters_network)) %>% 
   # match each commute distance to the nearest one for which we have a probability
-  crossing(cmtdist_use = unique(charge_probs$cmtdist)) %>% 
-  mutate(cmtdif = abs(cmtdist_use - commute_mi)) %>% 
-  with_groups(c(zcta_h, zcta_w), slice_min, order_by = cmtdif, n = 1) %>% 
-  select(-cmtdif) %>% 
+  mutate(commute_mi = d_meters_network / 1608,
+         cmtdist_use = commute_interpolator(commute_mi)) %>% 
+  drop_na(commute_mi) %>% 
+  with_groups(h_tract, mutate, job_frac = tot_jobs / sum(tot_jobs)) %>% 
   left_join(charge_probs_abcd, by = c("cmtdist_use" = "cmtdist"))
 
 # attach adoption info to commuter info
-commuters_by_scenario <- bind_rows(interp_model, interp_flat) %>%
-  left_join(commute_details, by = c("ZIP" = "zcta_h")) %>% 
-  mutate(vehs = tot_adoptions * job_frac) %>% 
-  group_by(ZIP = zcta_w, model_type, adoption_frac, cmtdist_abcd) %>% 
+commuters_by_scenario <- ca_adoption_steps %>%
+  left_join(commute_details, by = c("tract" = "h_tract")) %>% 
+  mutate(vehs = total_tract_zevs * job_frac) %>% 
+  group_by(tract = w_tract, year, cmtdist_abcd) %>% 
   summarize(possible_commuters = sum(vehs),
             .groups = "drop") %>% 
   mutate(possible_commuters = replace_na(possible_commuters, 0)) %>% 
-  # small number of commute pairs dont really show up right
-  drop_na(ZIP)
+  drop_na(tract)
 
 # separate data for interpolation ... and make model with third degree poly 
 commuter_models <- commuters_by_scenario %>% 
-  mutate(af = as.numeric(str_sub(adoption_frac, 1, 3)), .keep = "unused") %>% 
-  nest(data = c(possible_commuters, af)) %>% 
-  mutate(model = map(data, ~ lm(possible_commuters ~ poly(af, 3, raw = TRUE), data = .)))
+  mutate(yearf = year - 2019, .keep = "unused") %>% 
+  nest(data = c(possible_commuters, yearf)) %>% 
+  mutate(model = map(data, ~ lm(possible_commuters ~ poly(yearf, 3, raw = TRUE), data = .)))
 
 # grab the coefficients
 mods_params <- commuter_models %>% 
@@ -75,13 +84,13 @@ mods_params <- commuter_models %>%
 # so ... for output, we need the 0th-3rd power coefficients for each model, in wide format
 mods_params_wide <- mods_params %>% 
   mutate(term_name = if_else(term == "(Intercept)", "int", paste0("pw", str_sub(term, -1)))) %>% 
-  pivot_wider(id_cols = ZIP,
-              names_from = c(model_type, cmtdist_abcd, term_name),
+  pivot_wider(id_cols = tract,
+              names_from = c(cmtdist_abcd, term_name),
               values_from = estimate,
               values_fill = 0) %>% 
-  rename_with(~ paste("commute", ., sep = "_"))
+  rename_with(~ paste("commute_yr", ., sep = "_"), -tract)
 
 # finally ... write the results to disk
 mods_params_wide %>% 
-  write_csv("Data/delmarva_charging_interpolation_Aug04.csv")
+  write_csv("Data/california_charging_interpolation_yr_Sep08.csv")
 
