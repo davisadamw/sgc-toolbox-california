@@ -62,6 +62,6 @@ mods_params_wide %>%
 counties %>% 
   st_transform(3310) %>% 
   st_simplify(TRUE, 10) %>% 
-  st_transform(st_crs(counties)) %>% 
-  write_sf("Data/spatial_data/california_counties_simplified.shp")
+  st_transform("NAD83") %>% 
+  write_sf("Data/spatial_data/california_counties_simplified_NAD83.shp")
 
